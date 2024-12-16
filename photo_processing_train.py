@@ -17,7 +17,6 @@ import zipfile
 import io
 import sys
 from streamlit.runtime.scriptrunner import RerunException
-from streamlit_autorefresh import st_autorefresh
 
 mp_pose = mp.solutions.pose
 mp_face_mesh = mp.solutions.face_mesh
@@ -404,7 +403,6 @@ if uploaded_model_file is not None:
                 st.write("ダウンロード完了！")
                 st.session_state.download_flag = True
                 st.session_state.clear()
-                st_autorefresh(interval=1, limit=2)  # ページをリフレッシュ
                 st.rerun()
 
         elif st.session_state.download_flag:
