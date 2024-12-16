@@ -444,34 +444,55 @@ models = (model_r, model_g, model_b)
 #print(f"調整後の画像を保存しました: {output_image_path}")
 
 
-# Streamlitアプリ
+# タイトルと説明
 st.title("レタッチツール（仮）")
 st.write("学習モデルを使用して画像のRGB特性を自動調整します。")
 
 # ファイルアップロード
-uploaded_file = st.file_uploader("画像をアップロードしてください", type=["jpg", "jpeg", "png"])
+uploaded_files = st.file_uploader("画像をアップロードしてください", type=["jpg", "jpeg", "png"], accept_multiple_files=True)
 
-if uploaded_file is not None:
-    # アップロードされた画像をPIL形式で読み込む
-    image = Image.open(uploaded_file)
-    # PIL画像をOpenCV形式に変換
-    image_cv = cv2.cvtColor(np.array(image), cv2.COLOR_RGB2BGR)
-    # アップロードされた画像の表示
-    input_image = np.array(image)
-    st.image(input_image, caption="アップロードされた画像", use_column_width=True)
+if uploaded_files:
+    st.write("アップロードされたファイルの数:", len(uploaded_files))
 
-    # モデルを適用して画像を調整
-    st.write("モデルを適用中...")
-    adjusted_image_cv = apply_coefficients_multivariate_with_scalers(image_cv, models, scaler_X, scaler_Y)
-    output_image = Image.fromarray(cv2.cvtColor(adjusted_image_cv, cv2.COLOR_BGR2RGB))
+    # 処理された画像を格納するリスト
+    processed_images = []
+    zip_buffer = io.BytesIO()
 
-    # 調整後の画像を表示
-    st.image(output_image, caption="調整後の画像", use_column_width=True)
+    # 代表画像（1枚目）を表示するためのフラグ
+    first_image_displayed = False
 
-    # 調整後の画像をダウンロード可能にする
+    for uploaded_file in uploaded_files:
+        # アップロードされた画像をPIL形式で読み込む
+        image = Image.open(uploaded_file)
+        # PIL画像をOpenCV形式に変換
+        image_cv = cv2.cvtColor(np.array(image), cv2.COLOR_RGB2BGR)
+
+        # 代表のアップロード画像を表示
+        if not first_image_displayed:
+            st.image(np.array(image), caption="アップロードされた画像（1枚目）", use_column_width=True)
+            first_image_displayed = True
+
+        # モデルを適用して画像を調整
+        adjusted_image_cv = apply_coefficients_multivariate_with_scalers(image_cv, models, scaler_X, scaler_Y)
+        output_image = Image.fromarray(cv2.cvtColor(adjusted_image_cv, cv2.COLOR_BGR2RGB))
+
+        # バイトデータとして保存
+        buffer = io.BytesIO()
+        output_image.save(buffer, format="JPEG")
+        processed_images.append((uploaded_file.name, buffer.getvalue()))
+
+    # ZIPファイルを作成
+    with zipfile.ZipFile(zip_buffer, "w") as zf:
+        for file_name, data in processed_images:
+            zf.writestr(file_name, data)
+
+    # 調整後の画像（1枚目）を表示
+    st.image(Image.open(io.BytesIO(processed_images[0][1])), caption="調整後の画像（1枚目）", use_column_width=True)
+
+    # ZIPファイルをダウンロード可能にする
     st.download_button(
-        label="調整後の画像をダウンロード",
-        data=cv2.imencode('.jpg', adjusted_image_cv)[1].tobytes(),
-        file_name="output_image.jpg",
-        mime="image/jpeg"
+        label="調整後の画像を一括ダウンロード",
+        data=zip_buffer.getvalue(),
+        file_name="processed_images.zip",
+        mime="application/zip"
     )
