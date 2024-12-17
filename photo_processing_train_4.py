@@ -16,7 +16,6 @@ import streamlit as st
 import zipfile
 import io
 import sys
-from streamlit.runtime.scriptrunner import RerunException
 
 mp_pose = mp.solutions.pose
 mp_face_mesh = mp.solutions.face_mesh
@@ -328,31 +327,35 @@ st.write("レタッチ済みの画像ペアを追加学習させてモデルを�
 st.write("Python path:", sys.executable)
 st.write("Python version:", sys.version)
 
-# 変数のリセット
-uploaded_model_file = None
-uploaded_model = None
-before_files = []
-after_files = []
+# アップロードファイルのクリア
+if 'uploaded_files' not in st.session_state:
+    st.session_state.uploaded_files = []
 
-# セッションの状態初期化チェック
-if 'download_flag' not in st.session_state:
-    st.session_state.download_flag = False
+if 'processed' not in st.session_state:
+    st.session_state.processed = False
+    
+if 'downloaded' not in st.session_state:
+    st.session_state.downloaded = False
 
-# ファイルアップローダーとセッション初期化
-if "uploaded_model_file" not in st.session_state:
-    st.session_state.uploaded_model_file = None
+def clear_uploads():
+    st.session_state.uploaded_files = []
+    st.session_state.processed = False
+    st.session_state.downloaded = False
+    if 'uploaded_model_file' in st.session_state:
+        del st.session_state.uploaded_model_file
+    if 'before_files' in st.session_state:
+        del st.session_state.before_files
+    if 'after_files' in st.session_state:
+        del st.session_state.after_files
 
-# モデルのロード
-uploaded_model_file = st.file_uploader("追加学習させたいモデルファイルをアップロードしてください", type=["pkl"])
+# アップロードモデルファイルの初期化
+uploaded_model_file = []
 
-if uploaded_model_file is not None:
-    st.session_state.uploaded_model_file = uploaded_model_file
+if not st.session_state.downloaded:
+    # モデルのロード
+    uploaded_model_file = st.file_uploader("追加学習させたいモデルファイルをアップロードしてください", type=["pkl"])
 
-# アップロード状況を確認
-if st.session_state.uploaded_model_file:
-    st.write("アップロードされたファイル:", st.session_state.uploaded_model_file.name)
-
-if uploaded_model_file is not None:
+if uploaded_model_file is not None and not st.session_state.downloaded:
     try:
         model_r, model_g, model_b, scaler_X, scaler_Y = load_model_with_scalers(uploaded_model_file)
         models = (model_r, model_g, model_b)
@@ -381,36 +384,27 @@ if uploaded_model_file is not None:
             st.write("更新されたモデルを準備しています...")
             updated_model_data = save_model_with_scalers(updated_models, scaler_X, scaler_Y)
             st.write("モデルの更新が完了しました！")
-
-            st.write(st.session_state)
-
-            # ダウンロードボタンを作成
-            downloaded = st.download_button(
+            
+            st.session_state.downloaded = True  # ダウンロード完了フラグを立てる
+            
+            # ダウンロードボタンを作成         
+            st.download_button(
                 label="更新されたモデルをダウンロード",
                 data=updated_model_data,
                 file_name="updated_model.pkl",
                 mime="application/octet-stream"
             )
 
-            if st.button("ページをリフレッシュ"):
-                st.write('<script>window.location.reload()</script>', unsafe_allow_html=True)
-
-            if st.button("アプリを強制終了"):
-                st.write("アプリを強制終了します。")
-                sys.exit()  # コードの強制終了
-
-            if downloaded:
-                st.write("ダウンロード完了！")
-                st.session_state.download_flag = True
-                st.session_state.clear()
-                st.rerun()
-
-        elif st.session_state.download_flag:
-            st.write("ダウンロードが完了しました。アプリをリセットします。")
-            st.session_state.clear()
-            st.rerun()
-
     except Exception as e:
         st.error(f"モデルのロード中にエラーが発生しました: {e}")
 else:
     st.warning("モデルファイルをアップロードしてください")
+
+if uploaded_model_file == [] and st.session_state.downloaded:
+    # モデルの学習処理
+    st.session_state.processed = True  # 学習完了フラグを立てる
+    
+    # 学習完了後、クリアボタンを表示
+    if st.button('アップロードをクリアして新しい学習を開始'):
+        clear_uploads()
+        st.rerun()
