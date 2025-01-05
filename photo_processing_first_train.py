@@ -1,21 +1,14 @@
 import os
 import numpy as np
 import pandas as pd
-from PIL import Image, ImageDraw
+from PIL import Image, ImageDraw, ImageEnhance
 from sklearn.model_selection import train_test_split
 from sklearn.linear_model import SGDRegressor
-from sklearn.exceptions import NotFittedError
 from sklearn.metrics import mean_squared_error
 from sklearn.preprocessing import StandardScaler
 import mediapipe as mp
 import cv2
 import pickle  # モデルの保存・読み込みに使用
-import math
-import matplotlib.pyplot as plt
-import streamlit as st
-import zipfile
-import io
-import sys
 
 mp_pose = mp.solutions.pose
 mp_face_mesh = mp.solutions.face_mesh
@@ -30,6 +23,12 @@ def list_files_with_correct_encoding(directory):
         except UnicodeDecodeError:
             print(f"UnicodeDecodeError: {filename}")
     return files
+
+def load_image(image_path):
+    image = cv2.imread(image_path)
+    if image is None:
+        print(f"Failed to load image at {image_path}")
+    return image
 
 def get_cheek_landmarks(face_landmarks, h, w):
     """
@@ -52,7 +51,7 @@ def get_cheek_landmarks(face_landmarks, h, w):
         (int(face_landmarks.landmark[409].x * w), int(face_landmarks.landmark[409].y * h)),  # 上唇の右側近辺
         (int(face_landmarks.landmark[452].x * w), int(face_landmarks.landmark[452].y * h))   # 右目の外側近辺
     ]
-
+    
     return left_cheek, right_cheek
 
 def extract_cheek_region(image, cheek_coords):
@@ -80,7 +79,7 @@ def calculate_saturation(rgb_values):
     """彩度を計算します。"""
     max_rgb = rgb_values.max(axis=1)
     min_rgb = rgb_values.min(axis=1)
-    saturation = (max_rgb - min_rgb) / (max_rgb + 1e-5)  # 過剰分散を防ぐ
+    saturation = (max_rgb - min_rgb) / (max_rgb + 1e-5)
     return saturation.mean()
 
 def get_landmarks(image):
@@ -141,9 +140,6 @@ def extract_body_region(image, pose_landmarks, h, w):
         # 各座標を整数に変換
         body_points = [(int(x), int(y)) for x, y in body_points]
 
-        #Debug: Print the extracted body points
-        #print(f"10点の体領域ポイント: {body_points}")
-
     except Exception as e:
         print(f"Error in extracting body points: {e}")
         raise
@@ -152,6 +148,7 @@ def extract_body_region(image, pose_landmarks, h, w):
 
 def extract_body_features(image, body_coords, output_path="output_body_region.jpg"):
     """体領域の特性を抽出します。"""
+    # 体領域を描画
     pil_image = Image.fromarray(cv2.cvtColor(image, cv2.COLOR_BGR2RGB))  # OpenCVはBGR形式なのでRGBに変換
     body_coords = [(int(x), int(y)) for x, y in body_coords]  # 座標を整数化
 
@@ -169,11 +166,16 @@ def calculate_image_brightness(image):
     rgb_values = image.reshape(-1, 3)
     return calculate_brightness(rgb_values)
 
-def process_image_pair(before_image, after_image):
-    """加工前後の画像ペアから頬の平均RGB値と明るさを抽出します。"""
-    h, w, _ = before_image.shape
+def process_image_pair(before_path, after_path):
+    """加工前後の画像ペアから特性を抽出します。"""
+    before_image = load_image(before_path)
+    after_image = load_image(after_path)
 
-    #print("Getting landmarks...")
+    if before_image is None or after_image is None:
+        print(f"One or both images could not be loaded: {before_path}, {after_path}")
+        return None
+
+    h, w, _ = before_image.shape
     pose_landmarks = get_landmarks(before_image)
 
     if not pose_landmarks:
@@ -185,17 +187,12 @@ def process_image_pair(before_image, after_image):
 
         if body_coords is None:
             raise ValueError("Body coordinates could not be determined.")
-        
-        # Debug: Raw coordinates
-        #print(f"Raw body_coords: {body_coords}")
 
     except Exception as e:
         # Handle exceptions and continue processing other images
-        print(f"Error processing image pair : {e}")
+        print(f"Error processing image pair {before_path} and {after_path}: {e}")
 
-    #print("Body region extracted. Extracting body features...")
     body_rgb = extract_body_features(before_image, body_coords, output_path="output_body_region_red.jpg")
-
     body_contrast = calculate_contrast(body_rgb)
     body_saturation = calculate_saturation(body_rgb)
 
@@ -227,7 +224,6 @@ def process_image_pair(before_image, after_image):
     before_avg_rgb = np.mean([before_left_rgb.mean(axis=0), before_right_rgb.mean(axis=0)], axis=0)
     after_avg_rgb = np.mean([after_left_rgb.mean(axis=0), after_right_rgb.mean(axis=0)], axis=0)
 
-    #print("Calculating RGB coefficients...")
     coeff = after_avg_rgb / before_avg_rgb
 
     # デバッグ用の出力
@@ -239,24 +235,28 @@ def process_image_pair(before_image, after_image):
 
     return image_brightness, cheek_brightness, body_saturation, body_contrast, coeff
 
-def prepare_training_data(before_files, after_files):
+def prepare_training_data(before_dir, after_dir):
     """学習用データセットを準備します。"""
-    if len(before_files) != len(after_files):
+    data = []
+    before_dir = os.path.abspath(before_dir)  # 絶対パスに変換
+    after_dir = os.path.abspath(after_dir)    # 絶対パスに変換
+
+    # ディレクトリ内のファイルをリスト化（適切なエンコーディングでファイル名を取得）
+    before_images = list_files_with_correct_encoding(before_dir)  # 文字化けに対応
+    after_images = list_files_with_correct_encoding(after_dir)  # 文字化けに対応
+
+    if len(before_images) != len(after_images):
         raise ValueError("beforeとafterの画像数が一致しません。")
 
-    data = []
-    for before_file, after_file in zip(before_files, after_files):
+    for before_img, after_img in zip(before_images, after_images):
+        print("学習中… ")
+        # before_dir と after_dir を適切に結合（絶対パスを使って）
+        before_path = os.path.join(before_dir, before_img)  # ここで絶対パスのディレクトリとファイルを結合
+        after_path = os.path.join(after_dir, after_img)     # 同様に
+
         try:
-            # 画像ペアを読み込む
-            before_image = Image.open(before_file)
-            after_image = Image.open(after_file)
-
-            # PIL画像をOpenCV形式に変換
-            before_image_cv = cv2.cvtColor(np.array(before_image), cv2.COLOR_RGB2BGR)
-            after_image_cv = cv2.cvtColor(np.array(after_image), cv2.COLOR_RGB2BGR)
-
-            # 画像ペアから特徴量を計算
-            result = process_image_pair(before_image_cv, after_image_cv)
+            print(f"Processing {before_img} and {after_img}...")
+            result = process_image_pair(before_path, after_path)
             if result:
                 image_brightness, cheek_brightness, body_saturation, body_contrast, coeff = result
                 data.append({
@@ -268,143 +268,75 @@ def prepare_training_data(before_files, after_files):
                     'coeff_g': coeff[1],
                     'coeff_b': coeff[2]
                 })
-
         except Exception as e:
-            print(f"画像ペア {before_file.name} と {after_file.name} の処理中にエラーが発生しました: {e}")
+            print(f"画像ペア {before_img} と {after_img} の処理中にエラーが発生しました: {e}")
             continue
 
-    # リストをPandasのDataFrameに変換して返す
-    new_data_df = pd.DataFrame(data)
-    return new_data_df  # ここでDataFrameを返す
+    return pd.DataFrame(data)
 
-@st.cache_data
-def load_model_with_scalers(uploaded_file):
-    # UploadedFile から直接読み込む
-    models = pickle.load(uploaded_file)
+def train_sgd_regressor_model(df):
+    """特徴量からRGB係数を予測するSGD回帰モデルを訓練します。"""
+    X = df[['image_brightness', 'cheek_brightness', 'body_saturation', 'body_contrast']].values
+    Y = df[['coeff_r', 'coeff_g', 'coeff_b']].values
 
-    if not all(key in models for key in ['model_r', 'model_g', 'model_b', 'scaler_X', 'scaler_Y']):
-        raise ValueError("保存されたデータに必要なキーが含まれていません。")
+    scaler_X = StandardScaler()
+    scaler_Y = StandardScaler()
+    X_scaled = scaler_X.fit_transform(X)
+    Y_scaled = scaler_Y.fit_transform(Y)
+
+    X_train, X_test, Y_train, Y_test = train_test_split(X_scaled, Y_scaled, test_size=0.2, random_state=42)
+
+    model_r = SGDRegressor(max_iter=1000, tol=1e-3, random_state=42, alpha=0.01)
+    model_g = SGDRegressor(max_iter=1000, tol=1e-3, random_state=42, alpha=0.01)
+    model_b = SGDRegressor(max_iter=1000, tol=1e-3, random_state=42, alpha=0.01)
+
+    model_r.fit(X_train, Y_train[:, 0])
+    model_g.fit(X_train, Y_train[:, 1])
+    model_b.fit(X_train, Y_train[:, 2])
+
+    # テストデータでの予測
+    Y_pred_r = model_r.predict(X_test)
+    Y_pred_g = model_g.predict(X_test)
+    Y_pred_b = model_b.predict(X_test)
     
-    print("モデルを読み込みました")
-    return models['model_r'], models['model_g'], models['model_b'], models['scaler_X'], models['scaler_Y']
+    # 各ターゲット変数のMSEを計算
+    mse_r = mean_squared_error(Y_test[:, 0], Y_pred_r)
+    mse_g = mean_squared_error(Y_test[:, 1], Y_pred_g)
+    mse_b = mean_squared_error(Y_test[:, 2], Y_pred_b)
+    
+    print(f"SGD回帰モデルのテストデータに対するMSE:")
+    print(f"  coeff_r: {mse_r}")
+    print(f"  coeff_g: {mse_g}")
+    print(f"  coeff_b: {mse_b}")
 
-def fine_tune_model_with_scalers(models, scaler_X, scaler_Y, new_data_df):
-    """新しいデータを学習済みスケーリングでスケールしてモデルを追加学習"""
-    model_r, model_g, model_b = models
-
-    # 新しいデータのスケーリング
-    X_new = new_data_df[['image_brightness', 'cheek_brightness', 'body_saturation', 'body_contrast']].values
-    Y_new = new_data_df[['coeff_r', 'coeff_g', 'coeff_b']].values
-    X_new_scaled = scaler_X.transform(X_new)
-    Y_new_scaled = scaler_Y.transform(Y_new)
-
-    # 各モデルの部分学習
-    model_r.partial_fit(X_new_scaled, Y_new_scaled[:, 0])  # 赤
-    model_g.partial_fit(X_new_scaled, Y_new_scaled[:, 1])  # 緑
-    model_b.partial_fit(X_new_scaled, Y_new_scaled[:, 2])  # 青
-
-    print("追加学習を完了しました。")
-    return model_r, model_g, model_b
-
-def save_model_with_scalers(models, scaler_X, scaler_Y):
-    """モデルとスケーラーをバイナリデータとして返す"""
-    model_buffer = io.BytesIO()
-    pickle.dump({
-        'model_r': models[0],
-        'model_g': models[1],
-        'model_b': models[2],
+    return {
+        'model_r': model_r, 
+        'model_g': model_g, 
+        'model_b': model_b,
         'scaler_X': scaler_X,
         'scaler_Y': scaler_Y
-    }, model_buffer)
-    model_buffer.seek(0)  # バッファの先頭に移動
-    return model_buffer.getvalue()  # バイナリデータを返す
+    }
 
-
-# タイトルと説明
-st.title("レタッチツール（仮） 学習版")
-st.write("レタッチ済みの画像ペアを追加学習させてモデルを更新します")
-
-st.write("Python path:", sys.executable)
-st.write("Python version:", sys.version)
-
-# アップロードファイルのクリア
-if 'uploaded_files' not in st.session_state:
-    st.session_state.uploaded_files = []
-
-if 'processed' not in st.session_state:
-    st.session_state.processed = False
+def train_and_save_model(sgd_model_save_path='trained_4factor_model3.pkl'):
+    # 学習データのディレクトリ
+    before_directory = 'training_data/before'
+    after_directory = 'training_data/after'
     
-if 'downloaded' not in st.session_state:
-    st.session_state.downloaded = False
+    # 学習データの準備
+    training_df = prepare_training_data(before_directory, after_directory)
+    print(training_df.head())  # データフレームの内容を確認
 
-def clear_uploads():
-    st.session_state.uploaded_files = []
-    st.session_state.processed = False
-    st.session_state.downloaded = False
-    if 'uploaded_model_file' in st.session_state:
-        del st.session_state.uploaded_model_file
-    if 'before_files' in st.session_state:
-        del st.session_state.before_files
-    if 'after_files' in st.session_state:
-        del st.session_state.after_files
-
-# アップロードモデルファイルの初期化
-uploaded_model_file = []
-
-if not st.session_state.downloaded:
-    # モデルのロード
-    uploaded_model_file = st.file_uploader("追加学習させたいモデルファイルをアップロードしてください", type=["pkl"])
-
-if uploaded_model_file is not None and not st.session_state.downloaded:
-    try:
-        model_r, model_g, model_b, scaler_X, scaler_Y = load_model_with_scalers(uploaded_model_file)
-        models = (model_r, model_g, model_b)
-        st.write("モデルが正常にロードされました。")
-
-        # ファイルアップロード
-        before_files = st.file_uploader("追加学習させるbefore画像をアップロードしてください", type=["jpg", "jpeg", "png"], accept_multiple_files=True)
-        after_files = st.file_uploader("追加学習させるafter画像をアップロードしてください", type=["jpg", "jpeg", "png"], accept_multiple_files=True)
-        st.write("※before画像とafter画像のファイル名は一致させてください")
-
-        if before_files and after_files:
-            if len(before_files) != len(after_files):
-                st.error("before画像とafter画像のファイル数が一致しません")
-            else:
-                st.success("アップロード完了！")
-        
-            # 学習データを準備
-            st.write("新しい学習データを準備しています...")
-            new_data_df = prepare_training_data(before_files, after_files)
-
-            # モデルを更新
-            st.write("モデルを追加学習中です...")
-            updated_models = fine_tune_model_with_scalers(models, scaler_X, scaler_Y, new_data_df)
-
-            # モデルを保存してバイナリデータを取得
-            st.write("更新されたモデルを準備しています...")
-            updated_model_data = save_model_with_scalers(updated_models, scaler_X, scaler_Y)
-            st.write("モデルの更新が完了しました！")
-            
-            st.session_state.downloaded = True  # ダウンロード完了フラグを立てる
-            
-            # ダウンロードボタンを作成         
-            st.download_button(
-                label="更新されたモデルをダウンロード",
-                data=updated_model_data,
-                file_name="updated_model.pkl",
-                mime="application/octet-stream"
-            )
-
-    except Exception as e:
-        st.error(f"モデルのロード中にエラーが発生しました: {e}")
-else:
-    st.warning("モデルファイルをアップロードしてください")
-
-if uploaded_model_file == [] and st.session_state.downloaded:
-    # モデルの学習処理
-    st.session_state.processed = True  # 学習完了フラグを立てる
+    if training_df is None:
+        print("new_data_df is None")
+    else:
+        print(training_df.head())
     
-    # 学習完了後、クリアボタンを表示
-    if st.button('アップロードをクリアして新しい学習を開始'):
-        clear_uploads()
-        st.rerun()
+    # モデルを訓練（SGD回帰）
+    sgd_model = train_sgd_regressor_model(training_df)
+    
+    # モデルをファイルに保存
+    with open(sgd_model_save_path, 'wb') as file:
+        pickle.dump(sgd_model, file)
+    print(f"予測モデルを保存しました: {sgd_model_save_path}")
+
+train_and_save_model()

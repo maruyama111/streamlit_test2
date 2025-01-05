@@ -133,9 +133,6 @@ def extract_body_region(image, pose_landmarks, h, w):
         # 各座標を整数に変換
         body_points = [(int(x), int(y)) for x, y in body_points]
 
-        # Debug: Print the extracted body points
-        #print(f"10点の体領域ポイント: {body_points}")
-
     except Exception as e:
         print(f"Error in extracting body points: {e}")
         raise
@@ -146,15 +143,7 @@ def extract_body_features(image, body_coords, output_path="output_body_region.jp
     """体領域の特性を抽出します。"""
     # 体領域を描画
     pil_image = Image.fromarray(cv2.cvtColor(image, cv2.COLOR_BGR2RGB))  # OpenCVはBGR形式なのでRGBに変換
-    #draw_overlay = ImageDraw.Draw(pil_image)
-
-    # 赤線で体領域を描画（閉じるために始点を終点として追加）
     body_coords = [(int(x), int(y)) for x, y in body_coords]  # 座標を整数化
-    #draw_overlay.polygon(body_coords, outline="red")  # ポリゴンとして描画
-
-    # 保存処理
-    #pil_image.save(output_path)
-    #print(f"描画した画像を保存しました: {output_path}")
 
     mask = Image.new('L', pil_image.size, 0)
     draw_mask = ImageDraw.Draw(mask)
@@ -188,10 +177,6 @@ def apply_coefficients_multivariate_with_scalers(test_image, models, scaler_X, s
     if body_coords is None:
         raise ValueError("Body coordinates could not be determined.")
         
-    # Debug: Raw coordinates
-    #print(f"Raw body_coords: {body_coords}")
-
-    #print("Body region extracted. Extracting body features...")
     body_rgb = extract_body_features(test_image, body_coords, output_path="output_body_region_red.jpg")
 
     body_contrast = calculate_contrast(body_rgb)
@@ -245,36 +230,6 @@ def load_model_with_scalers(uploaded_file):
     
     print("モデルを読み込みました")
     return models['model_r'], models['model_g'], models['model_b'], models['scaler_X'], models['scaler_Y']
-
-def fine_tune_model_with_scalers(models, scaler_X, scaler_Y, new_data_df):
-    """新しいデータを学習済みスケーリングでスケールしてモデルを追加学習"""
-    model_r, model_g, model_b = models
-
-    # 新しいデータのスケーリング
-    X_new = new_data_df[['image_brightness', 'cheek_brightness', 'body_saturation', 'body_contrast']].values
-    Y_new = new_data_df[['coeff_r', 'coeff_g', 'coeff_b']].values
-    X_new_scaled = scaler_X.transform(X_new)
-    Y_new_scaled = scaler_Y.transform(Y_new)
-
-    # 各モデルの部分学習
-    model_r.partial_fit(X_new_scaled, Y_new_scaled[:, 0])  # 赤
-    model_g.partial_fit(X_new_scaled, Y_new_scaled[:, 1])  # 緑
-    model_b.partial_fit(X_new_scaled, Y_new_scaled[:, 2])  # 青
-
-    print("追加学習を完了しました。")
-    return model_r, model_g, model_b
-
-def save_model_with_scalers(models, scaler_X, scaler_Y, model_path='updated_4factor_model2.pkl'):
-    """モデルとスケーラーを保存する"""
-    with open(model_path, 'wb') as file:
-        pickle.dump({
-            'model_r': models[0],
-            'model_g': models[1],
-            'model_b': models[2],
-            'scaler_X': scaler_X,
-            'scaler_Y': scaler_Y
-        }, file)
-    print(f"モデルとスケール係数を保存しました: {model_path}")
 
 
 # タイトルと説明
